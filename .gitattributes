@@ -1,0 +1,2 @@
+# The PC and the cloud both append to this file; keep both sides instead of conflicting
+seen.txt merge=union text eol=lf

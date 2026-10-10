@@ -1,0 +1,51 @@
+name: Memecoin alerts
+
+# Each run scans once a minute for a while, then starts the next run itself.
+# The schedule is only a safety net in case the chain breaks.
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: How long this run keeps scanning
+        default: '50'
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: memecoin-alerts
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan every minute
+        shell: pwsh
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          $minutes = '${{ inputs.minutes }}'
+          if (-not $minutes) { $minutes = 50 }
+          $end = (Get-Date).AddMinutes([double]$minutes)
+          while ((Get-Date) -lt $end) {
+            $start = Get-Date
+            try { ./memecoin-alerts.ps1 -Sync } catch { Write-Host "scan failed: $_" }
+            $wait = 60 - ((Get-Date) - $start).TotalSeconds
+            if ($wait -gt 0) { Start-Sleep -Seconds $wait }
+          }
+
+      - name: Start the next run
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run alerts.yml --ref main

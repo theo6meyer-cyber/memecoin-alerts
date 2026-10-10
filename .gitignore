@@ -1,0 +1,3 @@
+# Never publish the Telegram token
+config.json
+alerts.log

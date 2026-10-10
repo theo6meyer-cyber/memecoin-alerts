@@ -159,16 +159,26 @@ function Get-LocalTime {
 # ------------------------------------------------------------------- scan ----
 # On the PC, the cloud loop does the scanning; take over only while it is down
 if ($Sync -and -not $env:GITHUB_ACTIONS) {
-    $gh = Join-Path $env:ProgramFiles 'GitHub CLI\gh.exe'
     $ErrorActionPreference = 'Continue'
-    Push-Location $Root
-    $runs = & $gh run list --workflow alerts.yml --limit 5 --json status,updatedAt 2>$null | ConvertFrom-Json
-    # a run that ended moments ago is handing over to the next one
-    $alive = @($runs | Where-Object {
-        $_.status -ne 'completed' -or ([DateTime]::UtcNow - [DateTime]::Parse($_.updatedAt).ToUniversalTime()).TotalMinutes -lt 3
-    }).Count
-    if ($alive -eq 0) { & $gh workflow run alerts.yml 2>$null | Out-Null }
-    Pop-Location
+    $alive = 0
+    try {
+        # Reuse git's stored GitHub credential (the gh CLI is not signed in inside scheduled tasks)
+        $env:GIT_TERMINAL_PROMPT = '0'
+        $env:GCM_INTERACTIVE = 'never'
+        $repo = ((& git -C $Root remote get-url origin) -replace '^https://github\.com/', '') -replace '\.git$', ''
+        $cred = 'protocol=https', 'host=github.com', '' | & git -C $Root credential fill 2>$null
+        $token = ($cred | Where-Object { $_ -like 'password=*' }) -replace '^password=', ''
+        $api = "https://api.github.com/repos/$repo/actions/workflows/alerts.yml"
+        $headers = @{ Authorization = "Bearer $token"; Accept = 'application/vnd.github+json'; 'User-Agent' = 'memecoin-alerts' }
+        $runs = (Invoke-RestMethod -Uri "$api/runs?per_page=5" -Headers $headers -TimeoutSec 30).workflow_runs
+        # a run that ended moments ago is handing over to the next one
+        $alive = @($runs | Where-Object {
+            $_.status -ne 'completed' -or ([DateTime]::UtcNow - ([DateTime]$_.updated_at).ToUniversalTime()).TotalMinutes -lt 3
+        }).Count
+        if ($alive -eq 0) {
+            Invoke-RestMethod -Uri "$api/dispatches" -Method Post -Headers $headers -Body '{"ref":"main"}' -ContentType 'application/json' -TimeoutSec 30 | Out-Null
+        }
+    } catch { }
     $ErrorActionPreference = 'Stop'
     if ($alive -gt 0) { exit 0 }
     Write-Log 'cloud inactif : relance demandee, scan depuis le PC'
